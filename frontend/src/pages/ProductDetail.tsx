@@ -1,15 +1,15 @@
-import React, { useState, useEffect, useCallback } from 'react';
+// frontend/src/pages/ProductDetail.tsx
+
+import React, { useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-// 경로 재확인: 명시적 확장자 추가로 컴파일 오류 해결 시도
+import { useQuery, useMutation } from '@tanstack/react-query'; // [FIX] 올바른 Import
 import client from '../api/client'; 
 import { Loader2, Zap, Heart, MessageSquare, ShoppingCart, Send, Maximize2 } from 'lucide-react';
-// 경로 재확인: 명시적 확장자 추가
 import ProductCard from '../components/product/ProductCard'; 
-// 경로 재확인: 명시적 확장자 추가
 import Modal from '../components/ui/Modal'; 
+import { useProductDetail } from '../hooks/useProducts'; // [FIX] 기존 훅 재사용
 
-// Mock Data Types (실제 스키마와 일치해야 합니다)
+// Data Types
 interface ProductResponse {
   id: number;
   name: string;
@@ -28,43 +28,26 @@ interface CoordinationResponse {
     products: ProductResponse[];
 }
 
-// --------------------------------------------------
-// 1. 데이터 가져오기 (단일 상품)
-// --------------------------------------------------
-const useProductDetail = (productId: string | undefined) => {
-  return useQuery<ProductResponse>({
-    queryKey: ['productDetail', productId],
-    queryFn: async () => {
-      if (!productId) throw new Error("Product ID is missing.");
-      // API 클라이언트 호출 경로는 이미 client.ts에 설정되어 있어야 함
-      const res = await client.get(`/v1/products/${productId}`); 
-      return res.data;
-    },
-    enabled: !!productId,
-  });
-};
-
-// --------------------------------------------------
-// 2. LLM 설명 요청 및 질문 답변
-// --------------------------------------------------
-
 interface LLMQueryResponse {
     answer: string;
 }
 
-// LLM 질문을 백엔드로 보내는 Mutation (상세 페이지 QA)
+// [FIX] React Query의 useMutation을 올바르게 사용
+// client.useMutation이 아니라 useMutation 훅 내부에서 client.post를 호출합니다.
 const useLLMQuery = (productId: number) => {
-    return client.useMutation<LLMQueryResponse, Error, string>({
+    return useMutation<LLMQueryResponse, Error, string>({
         mutationFn: async (question: string) => {
-            const res = await client.post(`/v1/products/${productId}/llm-query`, { question });
+            // client는 Axios Instance입니다.
+            const res = await client.post(`/products/${productId}/llm-query`, { question });
             return res.data;
         },
     });
 };
 
-
 export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
+  
+  // hooks/useProducts.ts에 정의된 훅 사용
   const { data: product, isLoading: isProductLoading, isError: isProductError } = useProductDetail(id);
   
   // AI 코디 관련 상태
@@ -74,6 +57,8 @@ export default function ProductDetail() {
   // LLM 질문 상태
   const [currentQuestion, setCurrentQuestion] = useState('');
   const [qaHistory, setQaHistory] = useState<Array<{ type: 'user' | 'ai', text: string }>>([]);
+  
+  // Hook 호출 (조건부 렌더링 이전에 선언 - Hooks 규칙 준수)
   const llmQueryMutation = useLLMQuery(product?.id || 0);
 
   // 모달 상태
@@ -81,71 +66,91 @@ export default function ProductDetail() {
   const [modalTitle, setModalTitle] = useState('');
   const [modalContent, setModalContent] = useState<React.ReactNode>(null);
 
+  // 장바구니 및 위시리스트 상태 관리
+  const [isWished, setIsWished] = useState(false);
 
   // --------------------------------------------------
   // AI 기능 핸들러
   // --------------------------------------------------
 
-  // AI 코디 추천 기능 (Feature 4)
+  // AI 코디 추천 기능
   const handleAICoordination = useCallback(async () => {
     if (!product) return;
     setIsCoordinationLoading(true);
     setCoordinationResult(null);
 
     try {
-        // ⭐ API 경로: products.py에 추가된 AI 코디 API 호출
-        const res = await client.get(`/v1/products/ai-coordination/${product.id}`); 
-        
-        // 실제 API 응답 구조를 사용
-        const apiResponse: CoordinationResponse = res.data;
+        // [FIX] 백엔드 URL 구조에 맞게 수정 (/api/v1은 client baseURL에 포함됨)
+        const res = await client.get<CoordinationResponse>(`/products/ai-coordination/${product.id}`); 
+        const apiResponse = res.data;
 
         setCoordinationResult(apiResponse);
         
-        // 추천 결과를 모달로 보여주기
-        setModalTitle("AI 코디 추천 결과");
+        setModalTitle("✨ AI 스타일리스트 추천 코디");
         setModalContent(
-            <div className="space-y-4">
-                <p className="text-gray-700 font-medium whitespace-pre-wrap">{apiResponse.answer}</p>
-                <div className="grid grid-cols-2 gap-4">
-                    {apiResponse.products.map(p => (
-                        <ProductCard key={p.id} product={p} />
-                    ))}
+            <div className="space-y-6">
+                <div className="bg-purple-50 p-4 rounded-lg border border-purple-100">
+                    <p className="text-gray-800 font-medium whitespace-pre-wrap leading-relaxed">
+                        {apiResponse.answer}
+                    </p>
+                </div>
+                <div>
+                    <h4 className="text-sm font-bold text-gray-500 mb-3">추천 아이템</h4>
+                    {apiResponse.products.length > 0 ? (
+                        <div className="grid grid-cols-2 gap-4">
+                            {apiResponse.products.map(p => (
+                                <ProductCard key={p.id} product={p} />
+                            ))}
+                        </div>
+                    ) : (
+                        <p className="text-center text-gray-400 py-4">추천 상품을 찾지 못했습니다.</p>
+                    )}
                 </div>
             </div>
         );
         setIsModalOpen(true);
 
     } catch (e) {
-        alert('AI 코디 추천에 실패했습니다. (백엔드 로그 확인 필요)');
-        console.error(e);
+        alert('AI 코디 분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
+        console.error("AI Coordination Error:", e);
     } finally {
         setIsCoordinationLoading(false);
     }
   }, [product]);
 
-  // LLM 질문 제출 핸들러 (Feature 7)
+  // --------------------------------------------------
+  // UI 기능 핸들러 (Mock API 연결)
+  // --------------------------------------------------
+  const handleAddToCart = () => {
+    // 🚨 [FIX 7] 장바구니 기능 Mock: 실제 API 연결 전까지 동작하도록 처리
+    alert(`🛒 ${product?.name} (ID: ${product?.id}) 장바구니에 담기 성공!`);
+  };
+  
+  const handleToggleWishlist = () => {
+    // 🚨 [FIX 8] 하트 기능 Mock: 상태 변경 및 알림 처리
+    setIsWished(prev => !prev);
+    alert(`💖 위시리스트 ${isWished ? '제거' : '추가'} 완료`);
+  };
+
+  // LLM 질문 제출 핸들러
   const handleLLMSubmit = () => {
     const trimmedQuestion = currentQuestion.trim();
     if (!trimmedQuestion || llmQueryMutation.isPending) return;
 
-    // 1. QA 기록에 사용자 질문 추가
     setQaHistory(prev => [...prev, { type: 'user', text: trimmedQuestion }]);
     setCurrentQuestion('');
 
-    // 2. LLM API 호출
     llmQueryMutation.mutate(trimmedQuestion, {
         onSuccess: (data) => {
-            // 3. QA 기록에 AI 답변 추가
             setQaHistory(prev => [...prev, { type: 'ai', text: data.answer }]);
         },
         onError: (error) => {
-            setQaHistory(prev => [...prev, { type: 'ai', text: "죄송합니다. LLM 서버와 통신 중 오류가 발생했습니다." }]);
+            setQaHistory(prev => [...prev, { type: 'ai', text: "죄송합니다. AI 서비스 연결에 실패했습니다." }]);
             console.error(error);
         }
     });
   };
   
-  // Enter 키 이벤트 핸들러
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -157,168 +162,196 @@ export default function ProductDetail() {
   // 렌더링
   // --------------------------------------------------
   if (isProductLoading) {
-    return <div className="text-center py-20"><Loader2 className="w-8 h-8 animate-spin mx-auto text-gray-500" /></div>;
+    return <div className="text-center py-40"><Loader2 className="w-10 h-10 animate-spin mx-auto text-gray-300" /></div>;
   }
   if (isProductError || !product) {
-    return <div className="text-center py-20 text-red-500">상품 정보를 불러올 수 없습니다.</div>;
+    return <div className="text-center py-40 text-gray-500">상품 정보를 불러올 수 없습니다.</div>;
   }
 
-  // AI 생성 기본 설명 (Feature 7 상단)
-  const defaultAIBriefing = product.description || "AI가 생성한 상세 설명이 곧 로드될 예정입니다.";
+  const defaultAIBriefing = product.description 
+    ? product.description 
+    : "AI가 상품 상세 정보를 분석하고 있습니다...";
 
-  // 비슷한 가격대 표시 로직 (Feature 3)
   const getMockPriceRange = (price: number) => {
       const min = Math.floor(price * 0.9 / 1000) * 1000;
       const max = Math.ceil(price * 1.1 / 1000) * 1000;
       return `${min.toLocaleString()}원 ~ ${max.toLocaleString()}원`;
   };
 
-
   return (
-    <div className="max-w-6xl mx-auto p-4 md:p-8">
+    <div className="max-w-6xl mx-auto p-4 md:p-8 animate-fade-in">
       {/* 상품 정보 영역 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-10 mb-16">
         
         {/* 이미지/갤러리 */}
-        <div className="relative bg-gray-100 rounded-xl overflow-hidden aspect-square">
+        <div className="relative bg-gray-100 rounded-2xl overflow-hidden aspect-[3/4] shadow-sm">
             <img 
                 src={product.image_url || "/placeholder.png"} 
                 alt={product.name} 
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover hover:scale-105 transition-transform duration-500"
                 onError={(e) => (e.currentTarget.src = "/placeholder.png")}
             />
-            <button className="absolute top-4 right-4 p-2 bg-white/50 backdrop-blur-sm rounded-full text-gray-700 hover:bg-white transition-colors shadow-md">
+            <button className="absolute top-4 right-4 p-2 bg-white/70 backdrop-blur-md rounded-full text-gray-700 hover:bg-white transition-all shadow-sm">
                 <Maximize2 className="w-5 h-5" />
             </button>
         </div>
 
         {/* 상품 상세 */}
-        <div className="space-y-6">
-          <h1 className="text-3xl font-bold text-gray-900">{product.name}</h1>
-          <p className="text-4xl font-extrabold text-black">{product.price.toLocaleString()}원</p>
-          
-          <div className="text-sm text-gray-600 space-y-2 border-t pt-4">
-            <p><strong>카테고리:</strong> {product.category}</p>
-            <p><strong>재고:</strong> {product.in_stock ? `${product.stock_quantity}개 재고 있음` : '품절'}</p>
-            <p><strong>설명:</strong> {product.description.slice(0, 150)}...</p>
+        <div className="flex flex-col justify-center space-y-8">
+          <div>
+            <p className="text-sm font-bold text-indigo-600 mb-2 tracking-wide uppercase">{product.category}</p>
+            <h1 className="text-4xl font-bold text-gray-900 leading-tight mb-4">{product.name}</h1>
+            <p className="text-3xl font-medium text-gray-900">{product.price.toLocaleString()}원</p>
           </div>
 
-          <div className="flex space-x-3 pt-4">
-            <button className="flex-1 py-3 bg-black text-white font-bold rounded-lg flex items-center justify-center space-x-2 hover:bg-gray-800 transition-colors">
-              <ShoppingCart className="w-5 h-5" />
-              <span>장바구니 담기</span>
-            </button>
-            <button className="p-3 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors">
-              <Heart className="w-5 h-5" />
-            </button>
+          <div className="prose prose-sm text-gray-600 border-t border-gray-100 pt-6">
+             <p>{product.description}</p>
           </div>
           
-          {/* AI 추천 버튼들 (Feature 3, 5, 6) */}
-          <div className="flex flex-wrap gap-2 pt-4 border-t">
-            <button 
-                onClick={handleAICoordination} // Feature 4: AI 코디
-                disabled={isCoordinationLoading}
-                className="flex items-center space-x-1 px-4 py-2 bg-purple-500 text-white text-sm rounded-full shadow-md hover:bg-purple-600 transition-colors disabled:opacity-50"
-            >
-                <Zap className="w-4 h-4" />
-                {isCoordinationLoading ? <Loader2 className='w-4 h-4 animate-spin' /> : 'AI 코디 추천'}
-            </button>
+          <div className="space-y-4 pt-4">
+             <div className="flex items-center space-x-2 text-sm text-gray-500">
+                <div className={`w-2 h-2 rounded-full ${product.in_stock ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                <span>{product.in_stock ? `재고 보유 (${product.stock_quantity}개)` : '일시 품절'}</span>
+             </div>
 
-            {/* Feature 3: 비슷한 가격 버튼 - 클릭 시 관련 API 호출 로직 추가 필요 */}
-            <button className="btn-ai-small">
-                비슷한 가격 ({getMockPriceRange(product.price)})
-            </button>
-            {/* Feature 5, 6: 비슷한 색상, 다른 브랜드 버튼 - 클릭 시 관련 API 호출 로직 추가 필요 */}
-            <button className="btn-ai-small">
-                비슷한 색상
-            </button>
-            <button className="btn-ai-small">
-                다른 브랜드
-            </button>
+              <div className="flex space-x-3">
+                <button 
+                    // 🚨 [FIX 9] onClick 핸들러 추가: 장바구니 Mock 함수 연결
+                    onClick={handleAddToCart}
+                    className="flex-1 py-4 bg-gray-900 text-white font-bold rounded-xl flex items-center justify-center space-x-2 hover:bg-black transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-1"
+                >
+                  <span>장바구니 담기</span>
+                </button>
+                <button 
+                    // 🚨 [FIX 10] onClick 핸들러 추가 및 상태 기반 스타일 적용
+                    onClick={handleToggleWishlist}
+                    className={`p-4 bg-white border border-gray-200 rounded-xl transition-colors ${isWished ? 'text-red-500 hover:bg-red-50 border-red-200' : 'text-gray-700 hover:bg-gray-50'}`}
+                >
+                 <Heart className="w-5 h-5 fill-current" />
+                </button>
+              </div>
           </div>
-
+          
+          {/* AI 추천 버튼들 */}
+          <div className="pt-8 border-t border-gray-100">
+             <h3 className="text-sm font-bold text-gray-900 mb-3 flex items-center">
+                <Zap className="w-4 h-4 text-yellow-500 mr-1" /> AI 쇼핑 어시스턴트
+             </h3>
+             <div className="flex flex-wrap gap-2">
+                <button 
+                    onClick={handleAICoordination} 
+                    disabled={isCoordinationLoading}
+                    className="flex items-center space-x-2 px-5 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-sm font-medium rounded-full shadow-md hover:shadow-lg hover:from-purple-700 hover:to-indigo-700 transition-all disabled:opacity-70"
+                >
+                    {isCoordinationLoading ? <Loader2 className='w-4 h-4 animate-spin' /> : <Zap className="w-4 h-4" />}
+                    <span>이 옷과 어울리는 코디 추천</span>
+                </button>
+                <button className="btn-ai-subtle">
+                    비슷한 가격대 ({getMockPriceRange(product.price)})
+                </button>
+                <button className="btn-ai-subtle">
+                    유사한 스타일
+                </button>
+             </div>
+          </div>
         </div>
       </div>
 
-      {/* LLM 상품 설명 및 Q&A 영역 (Feature 7) */}
-      <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6 space-y-6">
-        <h2 className="text-2xl font-bold text-black flex items-center space-x-2">
-            <MessageSquare className="w-6 h-6 text-indigo-500" />
-            <span>AI 스타일리스트에게 문의하기</span>
-        </h2>
-        
-        {/* LLM 기본 설명 */}
-        <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-            <strong className="text-indigo-600">AI 상품 설명:</strong> 
-            <p className="mt-1 text-gray-700 whitespace-pre-wrap">{defaultAIBriefing}</p>
-            <p className="mt-2 text-xs text-gray-500">
-                추천 이유: 이 제품이 고객님의 관심사와 트렌드에 완벽하게 부합합니다.
-            </p>
+      {/* LLM 상품 설명 및 Q&A 영역 */}
+      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+        <div className="p-6 md:p-8 bg-gradient-to-br from-indigo-50 to-white border-b border-indigo-50">
+            <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                <div className="p-2 bg-indigo-100 rounded-lg">
+                    <MessageSquare className="w-6 h-6 text-indigo-600" />
+                </div>
+                AI 스타일리스트에게 물어보세요
+            </h2>
         </div>
+        
+        <div className="p-6 md:p-8 grid md:grid-cols-3 gap-8">
+            <div className="md:col-span-1 space-y-4">
+                <div className="p-5 bg-gray-50 rounded-xl border border-gray-100">
+                    <strong className="block text-indigo-600 mb-2 text-sm font-bold uppercase tracking-wider">AI Insight</strong> 
+                    <p className="text-gray-700 text-sm leading-relaxed">{defaultAIBriefing}</p>
+                </div>
+                <div className="p-5 bg-blue-50 rounded-xl border border-blue-100">
+                     <p className="text-blue-800 text-xs font-medium">
+                        💡 팁: "이 옷 세탁은 어떻게 해?", "여름에 입기 더울까?" 처럼 자연스럽게 물어보세요.
+                     </p>
+                </div>
+            </div>
 
-        {/* Q&A 기록 */}
-        <div className="h-64 overflow-y-auto space-y-4 p-2 bg-white border rounded-lg">
-            {qaHistory.length === 0 ? (
-                <p className="text-center text-gray-400 py-10">
-                    상품의 재질, 착용 팁, 코디 등에 대해 질문해보세요.
-                </p>
-            ) : (
-                qaHistory.map((item, index) => (
-                    <div key={index} className={`flex ${item.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-xs md:max-w-md p-3 rounded-xl shadow-md ${
-                            item.type === 'user' 
-                            ? 'bg-blue-500 text-white rounded-br-none' 
-                            : 'bg-gray-100 text-gray-800 rounded-tl-none'
-                        }`}>
-                            <p className="font-medium text-sm">{item.text}</p>
+            {/* Q&A 채팅창 */}
+            <div className="md:col-span-2 flex flex-col h-[500px] border border-gray-200 rounded-xl bg-white shadow-inner">
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                    {qaHistory.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-gray-400 space-y-3">
+                            <MessageSquare className="w-12 h-12 opacity-20" />
+                            <p>궁금한 점을 입력하시면 AI가 즉시 답변해드립니다.</p>
                         </div>
-                    </div>
-                ))
-            )}
-            {/* 로딩 인디케이터 */}
-            {llmQueryMutation.isPending && (
-                 <div className="flex justify-start">
-                    <div className="max-w-xs md:max-w-md p-3 rounded-xl bg-gray-100 text-gray-800 rounded-tl-none flex items-center space-x-2">
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <p className="text-sm">AI가 답변을 생성 중입니다...</p>
+                    ) : (
+                        qaHistory.map((item, index) => (
+                            <div key={index} className={`flex ${item.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-[80%] p-3.5 rounded-2xl text-sm leading-relaxed shadow-sm ${
+                                    item.type === 'user' 
+                                    ? 'bg-gray-900 text-white rounded-br-none' 
+                                    : 'bg-indigo-50 text-gray-800 rounded-tl-none border border-indigo-100'
+                                }`}>
+                                    {item.text}
+                                </div>
+                            </div>
+                        ))
+                    )}
+                    {llmQueryMutation.isPending && (
+                        <div className="flex justify-start">
+                            <div className="bg-white border border-gray-100 p-3 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-2">
+                                <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                                <span className="text-xs text-gray-500 font-medium">AI가 답변 작성 중...</span>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div className="p-4 border-t border-gray-100 bg-gray-50/50">
+                    <div className="flex gap-2">
+                        <input 
+                            type="text"
+                            value={currentQuestion}
+                            onChange={(e) => setCurrentQuestion(e.target.value)}
+                            onKeyPress={handleKeyPress}
+                            disabled={llmQueryMutation.isPending}
+                            placeholder="상품에 대해 궁금한 점을 입력하세요..."
+                            className="flex-1 px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all shadow-sm text-sm"
+                        />
+                        <button
+                            onClick={handleLLMSubmit}
+                            disabled={llmQueryMutation.isPending || !currentQuestion.trim()}
+                            className="px-5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors shadow-sm"
+                        >
+                            <Send className="w-5 h-5" />
+                        </button>
                     </div>
                 </div>
-            )}
-        </div>
-
-        {/* 질문 입력 폼 */}
-        <div className="flex space-x-3">
-          <input 
-            type="text"
-            value={currentQuestion}
-            onChange={(e) => setCurrentQuestion(e.target.value)}
-            onKeyPress={handleKeyPress}
-            disabled={llmQueryMutation.isPending}
-            placeholder="예: 이 코트의 보온성은 어떤가요?"
-            className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-          />
-          <button
-            onClick={handleLLMSubmit}
-            disabled={llmQueryMutation.isPending || !currentQuestion.trim()}
-            className="p-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 transition-colors"
-          >
-            <Send className="w-5 h-5" />
-          </button>
+            </div>
         </div>
       </div>
       
-      {/* 코디 추천 모달 */}
-      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={modalTitle} maxWidth="max-w-2xl">
+      <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={modalTitle} maxWidth="max-w-3xl">
         {modalContent}
       </Modal>
 
-      {/* 스타일링을 위한 임시 CSS 클래스 */}
       <style>{`
-          .btn-ai-small {
-              @apply px-4 py-2 bg-gray-100 text-gray-700 text-sm rounded-full hover:bg-gray-200 transition-colors;
+          .btn-ai-subtle {
+              @apply px-4 py-2 bg-white border border-gray-200 text-gray-600 text-xs font-medium rounded-full hover:bg-gray-50 hover:border-gray-300 transition-colors;
+          }
+          @keyframes fade-in {
+              from { opacity: 0; transform: translateY(10px); }
+              to { opacity: 1; transform: translateY(0); }
+          }
+          .animate-fade-in {
+              animation: fade-in 0.5s ease-out forwards;
           }
       `}</style>
-
     </div>
   );
 }

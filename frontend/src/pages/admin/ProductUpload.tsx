@@ -1,228 +1,329 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Upload, FileText, AlertCircle, CheckCircle, Image as ImageIcon, FileSpreadsheet } from 'lucide-react';
-import client from '@/api/client'; // 기존 axios client 유지
+import { 
+  Upload, FileText, AlertCircle, CheckCircle, Image as ImageIcon, 
+  FileSpreadsheet, X, Loader2, Trash2 
+} from 'lucide-react';
+import client from '@/api/client';
 import { Button } from '@/components/ui/button';
 
-// 🚨 Tabs 설정
+// --- Types ---
 type UploadMode = 'image' | 'csv';
 
+interface FileQueueItem {
+  id: string;
+  file: File;
+  status: 'idle' | 'processing' | 'success' | 'error';
+  progress: number;
+  resultMsg?: string;
+  errorMsg?: string;
+}
+
+// --- Config ---
 const UPLOAD_CONFIG = {
-    image: {
-        title: 'AI 이미지 자동 등록',
-        desc: '상품 이미지를 올리면 AI가 분석하여 이름, 가격, 설명을 자동으로 생성합니다.',
-        endpoint: '/products/upload/image-auto', // 백엔드 주소 (client에 baseURL이 있다면 /products...)
-        accept: '.png, .jpg, .jpeg, .webp',
-        label: '이미지 파일 선택',
-        icon: <ImageIcon className="w-5 h-5" />
-    },
-    csv: {
-        title: 'CSV 대량 등록',
-        desc: 'CSV 파일을 사용하여 상품을 일괄 등록합니다. (이미지 URL 포함 가능)',
-        endpoint: '/products/upload/csv',
-        accept: '.csv',
-        label: 'CSV 파일 선택',
-        icon: <FileSpreadsheet className="w-5 h-5" />
-    }
+  image: {
+    title: 'AI 이미지 자동 등록 (Bulk)',
+    desc: '여러 장의 이미지를 드래그하세요. AI가 병렬로 분석하여 상품을 자동 등록합니다.',
+    endpoint: '/products/upload/image-auto', 
+    accept: '.png, .jpg, .jpeg, .webp',
+    label: '이미지 파일 선택 (다중 가능)',
+    icon: <ImageIcon className="w-5 h-5" />,
+    multiple: true
+  },
+  csv: {
+    title: 'CSV 대량 등록',
+    desc: 'CSV 파일을 사용하여 상품을 일괄 등록합니다.',
+    endpoint: '/products/upload/csv',
+    accept: '.csv',
+    label: 'CSV 파일 선택',
+    icon: <FileSpreadsheet className="w-5 h-5" />,
+    multiple: false
+  }
 };
 
 export default function ProductUpload() {
-    const fileInputRef = useRef<HTMLInputElement>(null);
-    const [mode, setMode] = useState<UploadMode>('image'); // 탭 상태 관리
-    const [logs, setLogs] = useState<string[]>([]);
-    const [progress, setProgress] = useState(0);
-    const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle');
-    const [resultCount, setResultCount] = useState({ success: 0, fail: 0 });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [mode, setMode] = useState<UploadMode>('image');
+  const [fileQueue, setFileQueue] = useState<FileQueueItem[]>([]);
+  const [isGlobalProcessing, setIsGlobalProcessing] = useState(false);
+  const [logs, setLogs] = useState<string[]>([]);
+  
+  const queryClient = useQueryClient();
 
-    const queryClient = useQueryClient();
-
-    // 로그 추가 Helper
-    const addLog = useCallback((log: string) => {
-        setLogs((prev) => {
-            const newLogs = prev.length >= 100 ? prev.slice(1) : prev;
-            return [...newLogs, `[${new Date().toLocaleTimeString()}] ${log}`];
-        });
-    }, []);
-
-    // 🚨 통합 업로드 Mutation (파일 자체를 백엔드로 전송)
-    const { mutateAsync, isPending } = useMutation({
-        mutationFn: async (file: File) => {
-            const formData = new FormData();
-            formData.append('file', file);
-
-            // 현재 탭에 맞는 엔드포인트 호출
-            const config = UPLOAD_CONFIG[mode];
-            
-            // Content-Type을 명시하지 않아도 axios가 FormData를 감지하면 자동 설정하지만,
-            // 확실하게 하기 위해 헤더를 지정할 수도 있습니다.
-            const response = await client.post(config.endpoint, formData, {
-                headers: { 'Content-Type': 'multipart/form-data' },
-                // 업로드 진행률 표시 (axios 기능)
-                onUploadProgress: (progressEvent) => {
-                    if (progressEvent.total) {
-                        const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-                        setProgress(percent);
-                    }
-                }
-            });
-            return response.data;
-        },
-        onSuccess: (data) => {
-            queryClient.invalidateQueries({ queryKey: ['products'] });
-            setStatus('success');
-            
-            // 응답 형태에 따라 결과 처리 (CSV는 통계, 이미지는 1건 성공)
-            if (mode === 'csv') {
-                setResultCount({ success: data.success, fail: data.failed });
-                addLog(`✅ CSV Processing Complete! Success: ${data.success}, Failed: ${data.failed}`);
-                if (data.errors && data.errors.length > 0) {
-                    data.errors.forEach((err: string) => addLog(`❌ CSV Error: ${err}`));
-                }
-            } else {
-                setResultCount({ success: 1, fail: 0 });
-                addLog(`✅ AI Analysis & Upload Complete! Product ID: ${data.id}`);
-            }
-        },
-        onError: (error: any) => {
-            setStatus('error');
-            const msg = error.response?.data?.detail || error.message;
-            addLog(`❌ Upload Failed: ${msg}`);
-        }
+  // --- Helper: Logs ---
+  const addLog = useCallback((log: string) => {
+    setLogs((prev) => {
+      const newLogs = prev.length >= 100 ? prev.slice(1) : prev;
+      return [...newLogs, `[${new Date().toLocaleTimeString()}] ${log}`];
     });
+  }, []);
 
-    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
+  // --- Helper: Update Item State ---
+  const updateItemStatus = (id: string, updates: Partial<FileQueueItem>) => {
+    setFileQueue(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+  };
 
-        setLogs([]);
-        setProgress(0);
-        setStatus('idle');
-        addLog(`📂 File selected (${mode.toUpperCase()}): ${file.name}`);
-        addLog(`🚀 Sending to Server for processing...`);
+  // --- Mutation (Single File Upload) ---
+  const uploadMutation = useMutation({
+    mutationFn: async (item: FileQueueItem) => {
+      const formData = new FormData();
+      formData.append('file', item.file);
 
-        try {
-            await mutateAsync(file);
-        } catch (err) {
-            // onError에서 처리됨
-        } finally {
-            if (fileInputRef.current) {
-                fileInputRef.current.value = '';
-            }
+      const config = UPLOAD_CONFIG[mode];
+      
+      const response = await client.post(config.endpoint, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            updateItemStatus(item.id, { progress: percent });
+          }
         }
-    };
+      });
+      return response.data;
+    }
+  });
 
-    const currentConfig = UPLOAD_CONFIG[mode];
+  // --- Handlers ---
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const newFiles = Array.from(e.target.files).map(file => ({
+        id: Math.random().toString(36).substring(7),
+        file,
+        status: 'idle' as const,
+        progress: 0
+      }));
 
-    return (
-        <div className="p-6 max-w-4xl mx-auto">
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">상품 업로드 관리</h1>
-            <p className="text-gray-500 mb-6">AI 자동 등록 또는 CSV 대량 등록을 선택하세요.</p>
+      if (mode === 'csv') {
+        // CSV는 1개만 허용
+        setFileQueue(newFiles.slice(0, 1));
+      } else {
+        // 이미지는 추가
+        setFileQueue(prev => [...prev, ...newFiles]);
+      }
+      
+      addLog(`📂 Added ${newFiles.length} file(s) to queue.`);
+      // Reset input
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
-            {/* 1. 탭 선택 UI */}
-            <div className="flex space-x-4 mb-6">
-                {(Object.keys(UPLOAD_CONFIG) as UploadMode[]).map((tabKey) => (
-                    <button
-                        key={tabKey}
-                        onClick={() => { setMode(tabKey); setStatus('idle'); setLogs([]); }}
-                        className={`flex items-center space-x-2 px-6 py-3 rounded-xl font-bold transition-all ${
-                            mode === tabKey 
-                                ? 'bg-purple-600 text-white shadow-lg shadow-purple-200 dark:shadow-none' 
-                                : 'bg-white dark:bg-gray-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700'
-                        }`}
-                    >
-                        {UPLOAD_CONFIG[tabKey].icon}
-                        <span>{UPLOAD_CONFIG[tabKey].title}</span>
-                    </button>
-                ))}
+  const removeFile = (id: string) => {
+    setFileQueue(prev => prev.filter(f => f.id !== id));
+  };
+
+  const handleStartUpload = async () => {
+    if (fileQueue.length === 0) return;
+    setIsGlobalProcessing(true);
+    addLog("🚀 Starting Batch Upload...");
+
+    // CSV는 단건 처리
+    if (mode === 'csv') {
+      const item = fileQueue[0];
+      if (!item) return;
+      
+      updateItemStatus(item.id, { status: 'processing', progress: 0 });
+      try {
+        const data = await uploadMutation.mutateAsync(item);
+        updateItemStatus(item.id, { status: 'success', resultMsg: `성공: ${data.success}, 실패: ${data.failed}` });
+        addLog(`✅ CSV Upload Complete. Success: ${data.success}`);
+        queryClient.invalidateQueries({ queryKey: ['products'] });
+      } catch (err: any) {
+        updateItemStatus(item.id, { status: 'error', errorMsg: err.message });
+        addLog(`❌ CSV Error: ${err.message}`);
+      }
+      setIsGlobalProcessing(false);
+      return;
+    }
+
+    // Image Bulk Processing (Concurrency Control: 3 parallel requests)
+    const PENDING_QUEUE = fileQueue.filter(f => f.status === 'idle' || f.status === 'error');
+    const CONCURRENCY = 3;
+    
+    // Process items in chunks or simplified queue
+    // 단순화를 위해 for...of 로 순차 처리하되, Promise.all로 묶을 수 있음.
+    // 여기서는 안정성을 위해 3개씩 끊어서 처리
+    
+    for (let i = 0; i < PENDING_QUEUE.length; i += CONCURRENCY) {
+      const batch = PENDING_QUEUE.slice(i, i + CONCURRENCY);
+      
+      await Promise.all(batch.map(async (item) => {
+        updateItemStatus(item.id, { status: 'processing', progress: 0 });
+        try {
+          const data = await uploadMutation.mutateAsync(item);
+          updateItemStatus(item.id, { 
+            status: 'success', 
+            progress: 100, 
+            resultMsg: data.name // 상품명 표시
+          });
+          addLog(`✅ Uploaded: ${item.file.name} -> ${data.name}`);
+        } catch (err: any) {
+          const errMsg = err.response?.data?.detail || "Upload failed";
+          updateItemStatus(item.id, { status: 'error', errorMsg: errMsg });
+          addLog(`❌ Failed: ${item.file.name} - ${errMsg}`);
+        }
+      }));
+    }
+
+    queryClient.invalidateQueries({ queryKey: ['products'] });
+    setIsGlobalProcessing(false);
+    addLog("✨ All tasks finished.");
+  };
+
+  const currentConfig = UPLOAD_CONFIG[mode];
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">상품 업로드 관리</h1>
+      <p className="text-gray-500 mb-6">AI 자동 등록 또는 CSV 대량 등록을 선택하세요.</p>
+
+      {/* 1. Mode Tabs */}
+      <div className="flex space-x-4 mb-6">
+        {(Object.keys(UPLOAD_CONFIG) as UploadMode[]).map((tabKey) => (
+          <button
+            key={tabKey}
+            onClick={() => { setMode(tabKey); setFileQueue([]); setLogs([]); }}
+            className={`flex items-center space-x-2 px-6 py-3 rounded-xl font-bold transition-all ${
+              mode === tabKey 
+                ? 'bg-purple-600 text-white shadow-lg shadow-purple-200 dark:shadow-none' 
+                : 'bg-white dark:bg-gray-800 text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-700'
+            }`}
+          >
+            {UPLOAD_CONFIG[tabKey].icon}
+            <span>{UPLOAD_CONFIG[tabKey].title}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* 2. Upload Area & Queue (Left/Center) */}
+        <div className="lg:col-span-2 space-y-6">
+            
+          {/* Drop Zone */}
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2 mb-4">
+              {currentConfig.icon} {currentConfig.title}
+            </h3>
+            
+            <div 
+              className={`border-2 border-dashed rounded-2xl p-8 flex flex-col items-center justify-center transition-colors min-h-[200px]
+                ${isGlobalProcessing ? 'bg-gray-50 dark:bg-gray-900 border-gray-300 cursor-not-allowed' : 'border-gray-300 dark:border-gray-600 hover:border-purple-500 cursor-pointer'}
+              `}
+              onClick={() => !isGlobalProcessing && fileInputRef.current?.click()}
+            >
+              <input 
+                type="file" 
+                multiple={currentConfig.multiple}
+                accept={currentConfig.accept} 
+                ref={fileInputRef} 
+                className="hidden" 
+                onChange={handleFileSelect}
+                disabled={isGlobalProcessing}
+              />
+              <Upload className="w-12 h-12 text-gray-400 mb-4" />
+              <p className="text-gray-600 dark:text-gray-300 font-medium mb-1">
+                {isGlobalProcessing ? '처리 중입니다...' : '파일을 클릭하거나 여기로 드래그하세요'}
+              </p>
+              <p className="text-xs text-gray-400">{currentConfig.accept} 지원</p>
             </div>
+          </div>
 
+          {/* File Queue List */}
+          {fileQueue.length > 0 && (
             <div className="bg-white dark:bg-gray-800 p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-gray-700">
-                <div className="mb-6">
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                        {currentConfig.icon} {currentConfig.title}
-                    </h3>
-                    <p className="text-sm text-gray-500 mt-1">{currentConfig.desc}</p>
+              <div className="flex justify-between items-center mb-4">
+                <h4 className="font-bold text-gray-800 dark:text-white">
+                  대기열 ({fileQueue.length}개)
+                </h4>
+                <div className="flex gap-2">
+                    <Button 
+                        variant="ghost" 
+                        size="sm" 
+                        onClick={() => setFileQueue([])} 
+                        disabled={isGlobalProcessing}
+                        className="text-red-500 hover:text-red-600 hover:bg-red-50"
+                    >
+                        전체 삭제
+                    </Button>
+                    <Button 
+                        onClick={handleStartUpload} 
+                        disabled={isGlobalProcessing || fileQueue.every(f => f.status === 'success')}
+                        className="bg-purple-600 hover:bg-purple-700 text-white"
+                    >
+                        {isGlobalProcessing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                        {isGlobalProcessing ? '처리 중...' : '일괄 등록 시작'}
+                    </Button>
                 </div>
+              </div>
 
-                {/* 2. 업로드 영역 (Drag & Drop 스타일) */}
-                <div 
-                    className={
-                        `border-2 border-dashed rounded-2xl p-12 flex flex-col items-center justify-center transition-colors min-h-[300px]
-                        ${isPending 
-                            ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' 
-                            : (status === 'success' ? 'border-green-500 bg-green-50 dark:bg-green-900/10' : 
-                              (status === 'error' ? 'border-red-500 bg-red-50 dark:bg-red-900/10' : 'border-gray-300 dark:border-gray-600 hover:border-purple-400'))
-                        }
-                        ${isPending ? 'pointer-events-none' : 'cursor-pointer'}`
-                    }
-                    onClick={() => !isPending && fileInputRef.current?.click()}
-                >
-                    <input 
-                        type="file" 
-                        accept={currentConfig.accept} 
-                        ref={fileInputRef} 
-                        className="hidden" 
-                        onChange={handleFileChange}
-                        disabled={isPending}
-                    />
-                    
-                    {isPending ? (
-                        <div className="w-full max-w-xs text-center">
-                            <div className="mb-4 text-purple-600 dark:text-purple-400 font-bold text-3xl animate-pulse">{progress}%</div>
-                            <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 overflow-hidden">
-                                <div className="bg-purple-600 h-2.5 rounded-full transition-all duration-300" style={{ width: `${progress}%` }}></div>
+              <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                {fileQueue.map((item) => (
+                  <div key={item.id} className="flex items-center gap-4 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-xl border border-gray-100 dark:border-gray-700">
+                    {/* Icon Status */}
+                    <div className="flex-shrink-0">
+                        {item.status === 'idle' && <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-500"><FileText size={16}/></div>}
+                        {item.status === 'processing' && <Loader2 className="w-8 h-8 text-purple-600 animate-spin" />}
+                        {item.status === 'success' && <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-600"><CheckCircle size={16}/></div>}
+                        {item.status === 'error' && <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-red-600"><AlertCircle size={16}/></div>}
+                    </div>
+
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{item.file.name}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        {item.status === 'processing' && (
+                            <div className="w-full bg-gray-200 rounded-full h-1.5 dark:bg-gray-700 max-w-[150px]">
+                                <div className="bg-purple-600 h-1.5 rounded-full transition-all" style={{ width: `${item.progress}%` }}></div>
                             </div>
-                            <p className="mt-6 text-sm font-medium text-gray-600 dark:text-gray-300 animate-pulse">
-                                {mode === 'image' ? '🤖 AI가 이미지를 분석 중입니다...' : '📂 데이터를 처리 중입니다...'}
-                            </p>
-                            {mode === 'image' && <p className="text-xs text-gray-400 mt-2">(약 3~5초 소요됩니다)</p>}
-                        </div>
-                    ) : (
-                        <>
-                            <div className={`p-5 rounded-full mb-6 ${status === 'success' ? 'bg-green-100 text-green-600' : 'bg-purple-100 text-purple-600'} dark:bg-gray-700`}>
-                                {status === 'success' ? <CheckCircle size={40} /> : status === 'error' ? <AlertCircle size={40} /> : <Upload size={40} />}
-                            </div>
-                            <h3 className="text-xl font-bold text-gray-800 dark:text-white">
-                                {status === 'success' ? '업로드 완료!' : status === 'error' ? '업로드 실패' : currentConfig.label}
-                            </h3>
-                            
-                            {status === 'success' && (
-                                <div className="mt-2 text-center">
-                                    <p className="text-green-600 font-medium">작업이 성공적으로 끝났습니다.</p>
-                                    <p className="text-sm text-gray-500">성공: {resultCount.success} / 실패: {resultCount.fail}</p>
-                                </div>
-                            )}
-                            
-                            {status !== 'success' && (
-                                <>
-                                    <p className="text-gray-500 mt-2">파일을 클릭하거나 여기로 드래그하세요.</p>
-                                    <Button 
-                                        type="button" 
-                                        variant="default" 
-                                        className="mt-6 bg-gray-900 hover:bg-black text-white"
-                                    >
-                                        파일 선택하기
-                                    </Button>
-                                </>
-                            )}
-                        </>
-                    )}
-                </div>
+                        )}
+                        <p className={`text-xs ${
+                            item.status === 'error' ? 'text-red-500' : 
+                            item.status === 'success' ? 'text-green-500' : 'text-gray-500'
+                        }`}>
+                            {item.status === 'idle' ? '대기 중' : 
+                             item.status === 'processing' ? 'AI 분석 중...' :
+                             item.status === 'success' ? (item.resultMsg || '완료') : 
+                             (item.errorMsg || '실패')}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Action */}
+                    {item.status === 'idle' || item.status === 'error' ? (
+                        <button 
+                            onClick={() => removeFile(item.id)} 
+                            disabled={isGlobalProcessing}
+                            className="p-2 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full text-gray-400 hover:text-red-500 transition-colors"
+                        >
+                            <Trash2 size={16} />
+                        </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
             </div>
+          )}
+        </div>
 
-            {/* 3. 로그 영역 */}
-            <div className="mt-8 bg-black text-green-400 p-6 rounded-2xl font-mono text-sm h-64 overflow-y-auto shadow-xl border border-gray-800">
-                <div className="sticky top-0 bg-black flex items-center gap-2 border-b border-gray-800 pb-3 mb-3 text-gray-400 z-10">
-                    <FileText size={16} />
-                    <span className="font-bold tracking-wider">PROCESS_LOGS</span>
-                </div>
-                {logs.length === 0 ? (
-                    <span className="text-gray-700 animate-pulse">Waiting for input...</span>
+        {/* 3. Log Area (Right) */}
+        <div className="lg:col-span-1">
+          <div className="bg-black text-green-400 p-6 rounded-3xl font-mono text-xs h-full min-h-[400px] overflow-hidden flex flex-col shadow-xl border border-gray-800">
+            <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-3 text-gray-400">
+              <FileText size={14} />
+              <span className="font-bold tracking-wider">SYSTEM_LOGS</span>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-1 custom-scrollbar">
+               {logs.length === 0 ? (
+                    <span className="text-gray-700 animate-pulse">Waiting for action...</span>
                 ) : (
-                    logs.map((log, i) => <div key={i} className="mb-1 break-all hover:bg-gray-900 px-1 rounded">{log}</div>)
+                    logs.map((log, i) => <div key={i} className="break-all hover:bg-gray-900/50 p-1 rounded border-l-2 border-transparent hover:border-green-500 transition-all">{log}</div>)
                 )}
                 <div ref={useCallback((node: HTMLDivElement | null) => { if (node) node.scrollIntoView({ behavior: 'smooth' }); }, [logs])} />
             </div>
+          </div>
         </div>
-    );
+
+      </div>
+    </div>
+  );
 }

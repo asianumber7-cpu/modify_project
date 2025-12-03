@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     # Project Info
     PROJECT_NAME: str = Field("MODIFY AI Shopping Mall", description="프로젝트 이름")
     
-    # 🚨 FIX: main.py에서 참조하는 API 버전 Prefix 추가
+    # API Prefix
     API_V1_STR: str = "/api/v1"
     
     ENVIRONMENT: Literal["dev", "prod", "test"] = "dev"
@@ -45,10 +45,16 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     CELERY_TASK_TIME_LIMIT: int = 600
     
-    # AI & Vector DB (Backend Core에서 직접 사용하지 않더라도 참조용으로 유지)
+    # AI & Vector DB
     EMBEDDING_DIMENSION: int = 768 # 벡터 차원 (768D)
     
-    # AI Service에서 768차원 모델을 사용하도록 강제하는 검증 로직
+    # 🚨 [FIX] AI Service Connection URL 추가 (Docker Network Internal URL)
+    # 기본값: http://ai-service-api:8000/api/v1 (docker-compose 서비스명 기준)
+    AI_SERVICE_API_URL: str = Field(
+        "http://ai-service-api:8000/api/v1", 
+        description="AI 서비스 내부 통신 URL"
+    )
+    
     @field_validator("EMBEDDING_DIMENSION", mode="before")
     @classmethod
     def validate_embedding_dim(cls, v: Any) -> int:
@@ -56,7 +62,7 @@ class Settings(BaseSettings):
             raise ValueError("⚠️ EMBEDDING_DIMENSION must be 768 to match the chosen Embedding model.")
         return int(v)
 
-    # Superuser Setup (src.core.security.py에서 사용)
+    # Superuser Setup
     SUPERUSER_EMAIL: EmailStr = Field(..., description="초기 관리자 이메일")
     SUPERUSER_PASSWORD: str = Field(..., description="초기 관리자 비밀번호")
     
@@ -66,6 +72,12 @@ class Settings(BaseSettings):
     
     # Storage
     STORAGE_TYPE: Literal["local", "s3"] = "local"
+    
+    #Frontend URL 환경 변수 추가
+    FRONTEND_URL: str = Field(
+    "http://localhost:5173", # 기본값: Vite 개발 서버 주소
+    description="Frontend 서비스 URL (CORS Origin에 사용)"
+)
     
     # Email Settings
     MAIL_USERNAME: str

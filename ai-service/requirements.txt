@@ -1,6 +1,6 @@
 # Core & API
 pydantic==2.7.4
-pydantic-settings==2.2.1
+pydantic-settings==2.4.0
 fastapi==0.110.0
 uvicorn[standard]==0.27.1
 python-dotenv==1.0.1
@@ -13,26 +13,27 @@ celery==5.3.6
 redis==5.0.3
 
 # AI & Data Processing
-torch==2.1.2
+# torch는 Dockerfile에서 따로 설치하므로 여기서 주석 처리하거나 남겨도 됨 (이미 설치되어 있으면 skip함)
+# torch==2.1.2 
 transformers==4.41.2
 sentence-transformers==3.0.1
 accelerate==0.30.1
 numpy==1.26.4
-# 🚨 FIX: ibm-watsonx-ai 호환성을 위해 Pandas 다운그레이드 (2.2.1 -> 2.1.4)
 pandas==2.1.4
 Pillow==10.2.0
 
-# LangChain Ecosystem (v0.2 Standard)
-langchain==0.2.8
-langchain-community==0.2.7
-langchain-core==0.2.21
-langchain-openai==0.1.16
-langchain-huggingface==0.0.3
-langchain-text-splitters==0.2.2
+# LangChain Ecosystem (버전 명시)
+# 호환성을 위해 현재 시점 기준 안정적인 버전 세트입니다.
+langchain==0.3.0
+langchain-community==0.3.0
+langchain-core==0.3.0
+langchain-openai==0.2.0
+langchain-huggingface==0.1.0
+langchain-text-splitters==0.3.0
 
-# 🚨 FIX: Watsonx 공식 지원 패키지
-langchain-ibm==0.1.7
-ibm-watsonx-ai==1.0.4
+# Watsonx & IBM
+langchain-ibm==0.3.0
+ibm-watsonx-ai==1.1.20
 
 # Cloud & Storage
 boto3==1.34.60

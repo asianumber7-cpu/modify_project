@@ -53,6 +53,9 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - .env.dev
+    # [FIX] Inotify 한도 초과 에러 방지를 위한 폴링 모드 강제 설정
+    environment:
+      - WATCHFILES_FORCE_POLLING=true
     volumes:
       - ./backend-core:/app 
       - ./.env.dev:/app/.env.dev
@@ -98,6 +101,9 @@ services:
       - "8005:8000" # 호스트 8005 -> 컨테이너 8000 (테스트용)
     env_file:
       - .env.dev
+    # [FIX] Inotify 한도 초과 에러 방지를 위한 폴링 모드 강제 설정
+    environment:
+      - WATCHFILES_FORCE_POLLING=true
     volumes:
       - ./ai-service:/app 
       - model_cache:/app/models_cache

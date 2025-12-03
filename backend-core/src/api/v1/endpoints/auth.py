@@ -72,11 +72,14 @@ async def login_access_token(
     
     return {
         "access_token": access_token,
-        "refresh_token": refresh_token, # 👈 추가됨
+        "refresh_token": refresh_token,
         "token_type": "bearer",
     }
 
-#  토큰 갱신 API
+# --------------------------------------------------------------------------
+# 토큰 갱신 API
+# POST /api/v1/auth/refresh
+# --------------------------------------------------------------------------
 @router.post("/refresh", response_model=Token)
 async def refresh_token(
     refresh_token: str = Body(..., embed=True),
@@ -102,8 +105,10 @@ async def refresh_token(
     except JWTError:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
         
-    # 유저 확인
-    user = await crud_user.get_user(db, user_id=int(user_id))
+    # 🚨 [CRITICAL FIX] 올바른 함수 호출: crud_user.get_user -> crud_user.get
+    # crud_user.py 파일에 정의된 함수명(get)과 일치해야 합니다.
+    user = await crud_user.get(db, user_id=int(user_id))
+    
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     elif not user.is_active:
@@ -116,7 +121,6 @@ async def refresh_token(
     )
     
     # Refresh Token Rotation (보안 강화: Refresh Token도 새로 발급)
-    # 만약 Refresh Token을 그대로 유지하고 싶다면 입력받은 refresh_token을 그대로 리턴하세요.
     new_refresh_token = security.create_refresh_token(
         user.id, expires_delta=timedelta(days=7)
     )
